@@ -85,20 +85,40 @@ def play_beep(frequency: float = 440, duration: float = 0.1):
         print(f"Could not play beep: {e}")
 
 
-def beep_start():
-    """Beep indicating recording started (ascending tone)."""
+def beep_batch_start():
+    """Beep indicating batch recording started (4-tone ascending, lower range)."""
     if CONFIG["beep_on_start"]:
-        play_beep(440, 0.08)
-        time.sleep(0.1)
-        play_beep(880, 0.08)
+        # E4 → G4 → A4 → C5 (warm, steady progression)
+        for freq in [330, 392, 440, 523]:
+            play_beep(freq, 0.06)
+            time.sleep(0.07)
 
 
-def beep_stop():
-    """Beep indicating recording stopped (descending tone)."""
+def beep_batch_stop():
+    """Beep indicating batch recording stopped (4-tone descending, lower range)."""
     if CONFIG["beep_on_stop"]:
-        play_beep(880, 0.08)
-        time.sleep(0.1)
-        play_beep(440, 0.08)
+        # C5 → A4 → G4 → E4
+        for freq in [523, 440, 392, 330]:
+            play_beep(freq, 0.06)
+            time.sleep(0.07)
+
+
+def beep_streaming_start():
+    """Beep indicating streaming started (4-tone ascending, higher range)."""
+    if CONFIG["beep_on_start"]:
+        # C5 → D5 → E5 → G5 (bright, dynamic progression)
+        for freq in [523, 587, 659, 784]:
+            play_beep(freq, 0.06)
+            time.sleep(0.07)
+
+
+def beep_streaming_stop():
+    """Beep indicating streaming stopped (4-tone descending, higher range)."""
+    if CONFIG["beep_on_stop"]:
+        # G5 → E5 → D5 → C5
+        for freq in [784, 659, 587, 523]:
+            play_beep(freq, 0.06)
+            time.sleep(0.07)
 
 
 def beep_error():
@@ -955,7 +975,7 @@ class VoiceInputApp:
         self.mode = "batch"
         self.is_recording = True
         self.target_window = get_foreground_window()
-        beep_start()
+        beep_batch_start()
         self.recorder.start()
 
     def _stop_batch(self):
@@ -964,7 +984,7 @@ class VoiceInputApp:
         self.is_recording = False
         self.processing = True
         self.mode = None
-        beep_stop()
+        beep_batch_stop()
 
         # Get audio data
         audio_data = self.recorder.stop()
@@ -990,7 +1010,7 @@ class VoiceInputApp:
 
         # Start audio recording
         self.streaming_recorder.start()
-        beep_start()
+        beep_streaming_start()
 
         # Start worker thread
         thread = threading.Thread(target=self._streaming_worker, daemon=True)
@@ -1007,7 +1027,7 @@ class VoiceInputApp:
         self.streaming_recorder.stop()
 
         self.mode = None
-        beep_stop()
+        beep_streaming_stop()
 
     def _streaming_worker(self):
         """Background worker for real-time streaming transcription with smart diff corrections."""
