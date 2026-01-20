@@ -1,7 +1,8 @@
 venv/
 
-.pyc
+*.pyc
 __pycache__/
+*.egg-info/
 .DS_Store
 .env
 .idea/

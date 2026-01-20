@@ -1,0 +1,1 @@
+"""Hotkeys module tests."""

@@ -1,0 +1,113 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dictaclutch"
+version = "1.0.0"
+description = "Voice-to-text input tool using Whisper with real-time streaming"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+keywords = ["voice", "speech-to-text", "whisper", "transcription", "streaming", "dictation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+
+dependencies = [
+    "numpy>=1.24.0",
+    "sounddevice>=0.4.6",
+    "pynput>=1.7.6",
+    "pyperclip>=1.8.2",
+    "faster-whisper>=1.0.0",
+]
+
+[project.optional-dependencies]
+noise = ["noisereduce>=3.0.0"]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-mock>=3.10.0",
+    "mypy>=1.0.0",
+    "ruff>=0.1.0",
+]
+all = ["dictaclutch[noise,dev]"]
+
+[project.scripts]
+dictaclutch = "dictaclutch.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/dictaclutch/dictaclutch"
+Repository = "https://github.com/dictaclutch/dictaclutch.git"
+Issues = "https://github.com/dictaclutch/dictaclutch/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dictaclutch = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = [
+    "--strict-markers",
+    "-ra",
+    "-q",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks integration tests",
+    "windows: marks Windows-only tests",
+    "linux: marks Linux-only tests",
+]
+
+[tool.coverage.run]
+source = ["src/dictaclutch"]
+branch = true
+omit = [
+    "*/__main__.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if sys.platform",
+    "@abstractmethod",
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = [
+    "sounddevice.*",
+    "pynput.*",
+    "pyperclip.*",
+    "faster_whisper.*",
+    "noisereduce.*",
+]
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.isort]
+known-first-party = ["dictaclutch"]

@@ -1,26 +1,47 @@
-# Voice-to-Text Input Tool
+# DictaClutch
 
-A lightweight tool that captures audio with a global hotkey and transcribes it using GPU-accelerated Whisper, then pastes the text into the active window (like Claude Desktop).
+A lightweight voice-to-text input tool that captures audio with global hotkeys and transcribes it using GPU-accelerated Whisper, then outputs text into the active window.
 
 ## Features
 
-- **Global hotkey** (Ctrl+Shift+Space) - works from any application
+- **Two modes of operation:**
+  - **Batch Mode** (Ctrl+Shift+J) - Record, transcribe, paste
+  - **Streaming Mode** (Ctrl+Shift+K) - Real-time transcription as you speak
 - **GPU-accelerated** transcription using faster-whisper with CUDA
-- **Sub-second transcription** for typical voice clips
-- **Auto-paste** into the active window
-- **Audio feedback** (beeps on start/stop)
-- **Cross-platform** (Windows and Linux)
+- **Smart corrections** - Streaming mode intelligently corrects itself using word-level diffs
+- **Noise reduction** - Optional background noise filtering (fans, AC, hum)
+- **Audio feedback** - Distinct beep sequences for start/stop of each mode
+- **Cross-platform** - Windows and Linux support
+- **Hotkey diagnostic tool** - Built-in tool to validate hotkey detection
 
 ## Requirements
 
 - Python 3.10+
-- NVIDIA GPU with CUDA support (for GPU acceleration)
+- NVIDIA GPU with CUDA support (recommended for streaming mode)
 - ~2GB disk space for the Whisper model
 - Microphone
 
 ## Installation
 
-### 1. Install CUDA (if using GPU)
+### Quick Setup (Recommended)
+
+```bash
+# Clone the repository
+git clone https://github.com/your-username/dictaclutch.git
+cd dictaclutch
+
+# Run the setup script
+# Windows:
+scripts\setup.bat
+
+# Linux:
+chmod +x scripts/setup.sh
+./scripts/setup.sh
+```
+
+### Manual Installation
+
+#### 1. Install CUDA (for GPU acceleration)
 
 **Windows:**
 1. Download CUDA Toolkit 12.1+ from [NVIDIA](https://developer.nvidia.com/cuda-downloads)
@@ -33,13 +54,9 @@ A lightweight tool that captures audio with a global hotkey and transcribes it u
 sudo apt install nvidia-cuda-toolkit
 ```
 
-### 2. Create Virtual Environment
+#### 2. Create Virtual Environment
 
 ```bash
-# Create project directory
-cd voice-to-claude
-
-# Create and activate virtual environment
 python -m venv venv
 
 # Windows
@@ -49,23 +66,23 @@ venv\Scripts\activate
 source venv/bin/activate
 ```
 
-### 3. Install PyTorch with CUDA
+#### 3. Install PyTorch with CUDA
 
 ```bash
-# For CUDA 12.1 (recommended for RTX 30/40 series)
 pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
-
-# Verify CUDA is available
-python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 ```
 
-### 4. Install Other Dependencies
+#### 4. Install DictaClutch
 
 ```bash
-pip install -r requirements.txt
+# With noise reduction support (recommended)
+pip install -e ".[noise]"
+
+# For development (includes testing tools)
+pip install -e ".[noise,dev]"
 ```
 
-### 5. Linux Only: Install xdotool
+#### 5. Linux Only: Install xdotool
 
 ```bash
 sudo apt install xdotool
@@ -73,55 +90,78 @@ sudo apt install xdotool
 
 ## Usage
 
-```bash
-# Activate virtual environment first
-# Windows: venv\Scripts\activate
-# Linux: source venv/bin/activate
+### Running the Application
 
-python voice_input.py
+```bash
+# After activating your virtual environment
+dictaclutch
+
+# Or using Python module
+python -m dictaclutch
 ```
 
-On first run, it will download the Whisper model (~1GB for "small").
+### Hotkey Diagnostic Tool
+
+If hotkeys aren't working as expected, use the built-in diagnostic tool:
+
+```bash
+dictaclutch --diagnose
+
+# Verbose mode (shows all key events)
+dictaclutch --diagnose --verbose
+```
+
+This logs all key events to `hotkey_diagnostic.log` and prints detected hotkey combinations.
 
 ### Controls
 
 | Action | Hotkey |
 |--------|--------|
-| Start recording | `Ctrl + Shift + Space` |
-| Stop recording & transcribe | `Ctrl + Shift + Space` |
-| Exit | `Ctrl + C` (in terminal) |
+| Start/Stop Batch Mode | `Ctrl + Shift + J` |
+| Start/Stop Streaming Mode | `Ctrl + Shift + K` |
+| Exit | `ESC` or `Ctrl + C` |
 
 ### Workflow
 
-1. Start the tool (`python voice_input.py`)
-2. Click into Claude Desktop (or any text field)
-3. Press `Ctrl+Shift+Space` to start recording (ascending beep)
-4. Speak your message
-5. Press `Ctrl+Shift+Space` to stop (descending beep)
-6. Text is automatically pasted into the active window
+#### Batch Mode (Ctrl+Shift+J)
+1. Press hotkey to start recording (ascending beep)
+2. Speak your message
+3. Press hotkey again to stop (descending beep)
+4. Text is transcribed and pasted into the active window
+
+#### Streaming Mode (Ctrl+Shift+K)
+1. Press hotkey to start (two-tone beep)
+2. Speak continuously - text appears in real-time
+3. Watch as the system corrects itself using smart word-level diffs
+4. Press hotkey again to stop (descending two-tone beep)
 
 ## Configuration
 
-Edit the `CONFIG` dictionary at the top of `voice_input.py`:
+Configuration is defined in `src/dictaclutch/config.py`. Key settings:
 
 ```python
-CONFIG = {
-    # Change hotkey (example: Ctrl+Alt+R)
-    "hotkey": {keyboard.Key.ctrl, keyboard.Key.alt, keyboard.KeyCode.from_char('r')},
-    
-    # Model size: tiny (fastest), base, small (recommended), medium, large-v3 (most accurate)
+DEFAULT_CONFIG = {
+    # Hotkeys
+    "hotkey_batch": {keyboard.Key.ctrl, keyboard.Key.shift, keyboard.KeyCode.from_char("j")},
+    "hotkey_streaming": {keyboard.Key.ctrl, keyboard.Key.shift, keyboard.KeyCode.from_char("k")},
+
+    # Model: tiny, base, small, medium, large-v2, large-v3
     "model_size": "small",
-    
-    # Use CPU instead of GPU
-    "device": "cpu",
-    "compute_type": "int8",  # Use int8 for CPU
-    
-    # Language: None for auto-detect, or specific like "en", "es", "de"
+
+    # Device: "cuda" for GPU, "cpu" for CPU-only
+    "device": "cuda",
+    "compute_type": "float16",
+
+    # Language: "en", "es", "de", etc. (or None for auto-detect)
     "language": "en",
-    
-    # Disable beeps
-    "beep_on_start": False,
-    "beep_on_stop": False,
+
+    # Streaming settings
+    "streaming_min_chunk": 0.5,      # Seconds between transcriptions
+    "streaming_buffer_max": 30.0,    # Maximum audio buffer (seconds)
+
+    # Noise reduction
+    "noise_reduction_enabled": True,
+    "noise_reduction_strength": 0.75,
 }
 ```
 
@@ -135,7 +175,40 @@ CONFIG = {
 | medium | ~5GB | Slower | High accuracy |
 | large-v3 | ~10GB | Slowest | Best accuracy |
 
-For your RTX 3050 Ti (4GB VRAM), `small` is the sweet spot.
+For 4GB VRAM GPUs (like RTX 3050 Ti), `small` is recommended.
+
+## Project Structure
+
+```
+dictaclutch/
+├── pyproject.toml              # Modern Python packaging
+├── README.md                   # This file
+├── LICENSE                     # MIT license
+├── src/dictaclutch/            # Main package
+│   ├── __init__.py             # Package exports
+│   ├── __main__.py             # CLI entry point
+│   ├── config.py               # Configuration
+│   ├── app.py                  # Main application
+│   ├── audio/                  # Audio handling
+│   │   ├── recorder.py         # Audio recording
+│   │   ├── feedback.py         # Beep generation
+│   │   └── noise.py            # Noise reduction
+│   ├── transcription/          # Transcription
+│   │   ├── transcriber.py      # Batch transcription
+│   │   ├── streaming.py        # Streaming transcription
+│   │   └── buffer.py           # Incremental buffer
+│   ├── input/                  # Text output
+│   │   ├── text_output.py      # Platform facade
+│   │   ├── keyboard_win.py     # Windows implementation
+│   │   └── keyboard_linux.py   # Linux implementation
+│   └── hotkeys/                # Hotkey handling
+│       ├── handler.py          # Multi-hotkey handler
+│       └── diagnostic.py       # Diagnostic tool
+├── tests/                      # Unit tests
+└── scripts/                    # Shell scripts
+    ├── run.sh / run.bat
+    └── setup.sh / setup.bat
+```
 
 ## Troubleshooting
 
@@ -143,8 +216,9 @@ For your RTX 3050 Ti (4GB VRAM), `small` is the sweet spot.
 - Ensure NVIDIA drivers are installed: `nvidia-smi`
 - Ensure PyTorch was installed with CUDA: `pip install torch --index-url https://download.pytorch.org/whl/cu121`
 
-### Hotkey doesn't work
-- Some apps intercept global hotkeys. Try a different combination.
+### Hotkeys don't work
+- Run `dictaclutch --diagnose` to test hotkey detection
+- Some apps intercept global hotkeys - try a different combination
 - On Linux, ensure you have permissions for `/dev/input` devices:
   ```bash
   sudo usermod -aG input $USER
@@ -155,37 +229,48 @@ For your RTX 3050 Ti (4GB VRAM), `small` is the sweet spot.
 - Check your default microphone in system settings
 - Run: `python -c "import sounddevice; print(sounddevice.query_devices())"`
 
-### Paste doesn't work
-- Try changing `paste_method` to `"type"` in config (slower but more compatible)
+### Text doesn't appear in application
+- Try changing `paste_method` to `"clipboard"` in config
 - On Linux, ensure `xdotool` is installed
 
-## Running on Startup (Optional)
+### Noise reduction not working
+- Install the noise reduction dependency: `pip install noisereduce`
+- Or reinstall with: `pip install -e ".[noise]"`
 
-### Windows
-1. Create a shortcut to `voice_input.py`
-2. Press `Win+R`, type `shell:startup`, press Enter
-3. Move the shortcut to the Startup folder
+## Development
 
-### Linux (systemd)
+### Running Tests
+
 ```bash
-# Create service file
-cat > ~/.config/systemd/user/voice-input.service << EOF
-[Unit]
-Description=Voice to Text Input Tool
+pip install -e ".[dev]"
+pytest tests/
+```
 
-[Service]
-ExecStart=/path/to/venv/bin/python /path/to/voice_input.py
-Restart=on-failure
+### Code Style
 
-[Install]
-WantedBy=default.target
-EOF
+```bash
+# Type checking
+mypy src/dictaclutch/
 
-# Enable and start
-systemctl --user enable voice-input.service
-systemctl --user start voice-input.service
+# Linting
+ruff check src/dictaclutch/
 ```
 
 ## License
 
-MIT - Use freely!
+MIT - See [LICENSE](LICENSE) for details.
+
+## Contributing
+
+Contributions are welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes with tests
+4. Submit a pull request
+
+## Acknowledgments
+
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper) - Fast Whisper implementation
+- [pynput](https://github.com/moses-palmer/pynput) - Global hotkey detection
+- [noisereduce](https://github.com/timsainb/noisereduce) - Noise reduction

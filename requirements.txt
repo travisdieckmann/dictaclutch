@@ -13,5 +13,8 @@ pyperclip>=1.8.2
 # Whisper transcription (GPU-accelerated)
 faster-whisper>=1.0.0
 
+# Noise reduction for streaming mode (optional but recommended)
+noisereduce>=3.0.0
+
 # PyTorch with CUDA support - install separately:
 # pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121

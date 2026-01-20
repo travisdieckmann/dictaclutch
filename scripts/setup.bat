@@ -1,6 +1,6 @@
 @echo off
 echo ============================================================
-echo Voice-to-Text Input Tool - Setup
+echo DictaClutch - Setup
 echo ============================================================
 echo.
 
@@ -13,6 +13,8 @@ if errorlevel 1 (
 )
 echo Python found!
 echo.
+
+cd /d "%~dp0\.."
 
 echo [1/4] Creating virtual environment...
 call python -m venv venv
@@ -36,10 +38,10 @@ echo [3/4] Verifying CUDA...
 call venv\Scripts\activate.bat && call python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')"
 
 echo.
-echo [4/4] Installing other dependencies...
-call venv\Scripts\activate.bat && pip install -r requirements.txt
+echo [4/4] Installing DictaClutch...
+call venv\Scripts\activate.bat && pip install -e ".[noise,dev]"
 if errorlevel 1 (
-    echo ERROR: Failed to install dependencies
+    echo ERROR: Failed to install DictaClutch
     pause
     exit /b 1
 )
@@ -48,11 +50,14 @@ echo.
 echo ============================================================
 echo Setup complete!
 echo.
-echo To run the tool:
+echo To run DictaClutch:
 echo   1. Open a terminal in this folder
 echo   2. Run: venv\Scripts\activate
-echo   3. Run: python voice_input.py
+echo   3. Run: dictaclutch
 echo.
-echo Or just double-click: run.bat
+echo Or just double-click: scripts\run.bat
+echo.
+echo To test hotkey detection:
+echo   dictaclutch --diagnose
 echo ============================================================
 pause
