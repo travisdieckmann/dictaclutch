@@ -1,0 +1,17 @@
+# Voice-to-Text Input Tool Dependencies
+
+# Audio recording
+sounddevice>=0.4.6
+numpy>=1.24.0
+
+# Hotkey detection (cross-platform)
+pynput>=1.7.6
+
+# Clipboard
+pyperclip>=1.8.2
+
+# Whisper transcription (GPU-accelerated)
+faster-whisper>=1.0.0
+
+# PyTorch with CUDA support - install separately:
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
