@@ -2,6 +2,15 @@
 
 A lightweight voice-to-text input tool that captures audio with global hotkeys and transcribes it using GPU-accelerated Whisper, then outputs text into the active window.
 
+<div align="center">
+
+[![Status](https://img.shields.io/badge/status-active-success.svg)]()
+[![GitHub issues](https://img.shields.io/github/issues/travisdieckmann/dictaclutch)](https://github.com/travisdieckmann/dictaclutch/issues)
+[![GitHub pull requests](https://img.shields.io/github/issues-pr/travisdieckmann/dictaclutch)](https://github.com/travisdieckmann/dictaclutch/pulls)
+[![GitHub](https://img.shields.io/github/license/travisdieckmann/dictaclutch)](/LICENSE)
+
+</div>
+
 ## Features
 
 - **Two modes of operation:**
