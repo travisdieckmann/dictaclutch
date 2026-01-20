@@ -54,10 +54,8 @@ CONFIG = {
     "beep_on_start": True,
     "beep_on_stop": True,
     # Streaming mode settings
-    "streaming_min_chunk": 1.0,        # Seconds of audio before transcription attempt
-    "streaming_agreement_n": 2,         # Number of consecutive agreements for confirmation
+    "streaming_min_chunk": 0.5,         # Seconds between transcription attempts (lower = more real-time)
     "streaming_buffer_max": 30.0,       # Maximum buffer size (seconds) before trimming
-    "streaming_use_vad": True,          # Use Voice Activity Detection
 }
 
 # ============================================================================
@@ -220,14 +218,6 @@ def send_backspace_windows(count: int):
         time.sleep(0.01)
 
 
-def apply_correction(correction: dict):
-    """Apply correction by backspacing and typing replacement."""
-    if correction and correction.get("backspace_count", 0) > 0:
-        send_backspace_windows(correction["backspace_count"])
-        if correction.get("replacement"):
-            type_text(correction["replacement"])
-
-
 # ============================================================================
 # WINDOW FOCUS DETECTION
 # ============================================================================
@@ -360,92 +350,96 @@ class StreamingAudioRecorder:
 
 
 # ============================================================================
-# HYPOTHESIS BUFFER (LocalAgreement Policy)
+# INCREMENTAL BUFFER (Smart Diff Corrections)
 # ============================================================================
 
 
-class HypothesisBuffer:
+class IncrementalBuffer:
     """
-    Tracks transcription hypotheses using word-boundary matching to detect stable text.
-    Implements LocalAgreement-N policy for streaming transcription.
+    Tracks typed text and computes minimal corrections using character-level diff.
+    Types text as it's spoken and makes minimal corrections when needed.
     """
 
-    def __init__(self, agreement_n: int = 2):
-        self.history: list[str] = []           # Last N transcriptions
-        self.committed_words: list[str] = []   # Confirmed stable words
-        self.typed_char_count: int = 0         # Actual chars sent to keyboard
-        self.agreement_n: int = agreement_n
+    def __init__(self):
+        self.typed_text: str = ""  # What's actually been typed to the screen
+        self.transcript_history: list[str] = []  # Ring buffer of recent transcripts
 
     def update(self, new_transcript: str) -> dict:
         """
-        Add new transcript and determine what's stable using word-boundary matching.
+        Compare new transcript with typed text and compute minimal edit.
 
         Returns: {
-            "text_to_type": "new words to type",
-            "correction": {
-                "backspace_count": 5,
-                "replacement": "corrected words"
-            } or None
+            "backspace": N,  # chars to delete
+            "append": "text to add"
         }
         """
-        self.history.append(new_transcript)
-        if len(self.history) > self.agreement_n + 1:
-            self.history.pop(0)
+        if not new_transcript:
+            return {"backspace": 0, "append": ""}
 
-        if len(self.history) >= self.agreement_n:
-            # Find common word prefix across last N transcripts
-            common_words = self._find_common_word_prefix(self.history[-self.agreement_n:])
+        # Normalize: strip and collapse whitespace
+        new_transcript = " ".join(new_transcript.split())
 
-            if len(common_words) > len(self.committed_words):
-                # New confirmed words
-                new_words = common_words[len(self.committed_words):]
-                text_to_type = " ".join(new_words)
-                if self.committed_words:  # Add leading space if not first words
-                    text_to_type = " " + text_to_type
-                self.committed_words = common_words.copy()
-                self.typed_char_count += len(text_to_type)
-                return {"text_to_type": text_to_type, "correction": None}
+        # Track history for debugging
+        self.transcript_history.append(new_transcript)
+        if len(self.transcript_history) > 10:
+            self.transcript_history.pop(0)
 
-            elif len(common_words) < len(self.committed_words):
-                # CORRECTION: Previous words were wrong
-                wrong_words = self.committed_words[len(common_words):]
-                wrong_text = " ".join(wrong_words)
-                if common_words:  # Account for space before wrong words
-                    wrong_text = " " + wrong_text
+        # If nothing typed yet, just type the new transcript
+        if not self.typed_text:
+            self.typed_text = new_transcript
+            return {"backspace": 0, "append": new_transcript}
 
-                backspace_count = len(wrong_text)
-                self.committed_words = common_words.copy()
-                self.typed_char_count -= backspace_count
-
-                return {
-                    "text_to_type": "",
-                    "correction": {
-                        "backspace_count": backspace_count,
-                        "replacement": ""
-                    }
-                }
-
-        return {"text_to_type": "", "correction": None}
-
-    def _find_common_word_prefix(self, transcripts: list[str]) -> list[str]:
-        """Find longest common prefix at word boundaries."""
-        words_lists = [t.split() for t in transcripts]
-        if not words_lists or not all(words_lists):
-            return []
-
-        common_words = []
-        for word_tuple in zip(*words_lists):
-            if len(set(word_tuple)) == 1:
-                common_words.append(word_tuple[0])
+        # Find longest common prefix (character-level)
+        common_len = 0
+        min_len = min(len(self.typed_text), len(new_transcript))
+        for i in range(min_len):
+            if self.typed_text[i] == new_transcript[i]:
+                common_len = i + 1
             else:
                 break
-        return common_words
+
+        # Calculate minimal edit
+        chars_to_delete = len(self.typed_text) - common_len
+        chars_to_add = new_transcript[common_len:]
+
+        # Update what we consider "typed"
+        self.typed_text = new_transcript
+
+        return {
+            "backspace": chars_to_delete,
+            "append": chars_to_add
+        }
+
+    def get_stable_prefix(self) -> str:
+        """
+        Find text that's been stable across recent transcripts.
+        Useful for knowing what we're confident about.
+        """
+        if len(self.transcript_history) < 2:
+            return ""
+
+        # Find common prefix across last few transcripts
+        texts = self.transcript_history[-3:]  # Last 3
+        if not texts:
+            return ""
+
+        prefix = texts[0]
+        for text in texts[1:]:
+            # Find common prefix
+            common_len = 0
+            for i in range(min(len(prefix), len(text))):
+                if prefix[i] == text[i]:
+                    common_len = i + 1
+                else:
+                    break
+            prefix = prefix[:common_len]
+
+        return prefix
 
     def reset(self):
-        """Clear all buffers (on recording start/stop)."""
-        self.history.clear()
-        self.committed_words.clear()
-        self.typed_char_count = 0
+        """Clear all state (on recording start/stop)."""
+        self.typed_text = ""
+        self.transcript_history.clear()
 
 
 # ============================================================================
@@ -483,7 +477,10 @@ class Transcriber:
 
 
 class StreamingTranscriber:
-    """Manages continuous audio buffering and periodic transcription for streaming mode."""
+    """
+    Real-time streaming transcription with incremental output.
+    Transcribes at fixed intervals and uses smart diff for minimal corrections.
+    """
 
     def __init__(self, model: WhisperModel, config: dict):
         self.model = model
@@ -491,34 +488,15 @@ class StreamingTranscriber:
         self.min_chunk_size = config["streaming_min_chunk"]
         self.max_buffer_size = config["streaming_buffer_max"]
         self.language = config["language"]
-        self.use_vad = config["streaming_use_vad"]
 
         # Audio buffer
         self.audio_buffer = np.array([], dtype=np.float32)
 
-        # Hypothesis buffer for LocalAgreement policy
-        self.hypothesis_buffer = HypothesisBuffer(
-            agreement_n=config["streaming_agreement_n"]
-        )
+        # Incremental buffer for smart diff corrections
+        self.incremental_buffer = IncrementalBuffer()
 
         # Tracking
         self.last_transcript = ""
-
-        # VAD from faster-whisper (no extra dependency!)
-        self.vad_model = None
-        self.get_speech_ts = None
-        if self.use_vad:
-            try:
-                from faster_whisper.vad import get_speech_timestamps, VadOptions
-                self.get_speech_ts = get_speech_timestamps
-                self.vad_options = VadOptions(
-                    min_silence_duration_ms=500,  # 0.5s silence to trigger
-                    speech_pad_ms=200,
-                )
-                print("    VAD enabled (faster-whisper built-in)")
-            except ImportError:
-                print("    ⚠️ VAD not available, using time-based triggers")
-                self.use_vad = False
 
     def add_chunk(self, chunk: np.ndarray):
         """Add audio chunk to rolling buffer."""
@@ -529,60 +507,35 @@ class StreamingTranscriber:
         return len(self.audio_buffer) / self.sample_rate
 
     def should_transcribe(self) -> bool:
-        """Check if we should transcribe now (VAD-enhanced or time-based)."""
-        duration = self.get_buffer_duration()
-
-        if duration < self.min_chunk_size:
-            return False
-
-        if self.use_vad and self.get_speech_ts is not None:
-            try:
-                # Check for speech end (silence detected)
-                timestamps = self.get_speech_ts(self.audio_buffer, self.vad_options)
-                if timestamps:
-                    last_end = timestamps[-1]["end"] / self.sample_rate
-                    # If last speech ended > 0.5s ago, transcribe now
-                    if duration - last_end > 0.5:
-                        return True
-
-                # Force transcribe if buffer too large
-                if duration > self.max_buffer_size:
-                    return True
-
-                return False
-            except Exception:
-                # Fall back to time-based on VAD error
-                pass
-
-        # No VAD or VAD failed - transcribe at fixed intervals
-        return duration >= self.min_chunk_size
+        """Check if we have enough audio to transcribe (time-based, no VAD wait)."""
+        return self.get_buffer_duration() >= self.min_chunk_size
 
     def transcribe_buffer(self) -> dict:
         """
-        Transcribe current buffer and return result from HypothesisBuffer.
+        Transcribe current buffer and return incremental edit operations.
 
         Returns: {
-            "text_to_type": "new words to type",
-            "correction": {"backspace_count": N, "replacement": "..."} or None
+            "backspace": N,  # chars to delete
+            "append": "text to add"
         }
         """
         if len(self.audio_buffer) == 0:
-            return {"text_to_type": "", "correction": None}
+            return {"backspace": 0, "append": ""}
 
         # Transcribe
         segments, _ = self.model.transcribe(
             self.audio_buffer,
             language=self.language,
             beam_size=5,
-            vad_filter=False,  # We handle VAD ourselves for streaming
+            vad_filter=False,  # Don't filter - we want real-time output
         )
 
         # Collect transcript
         transcript = " ".join(seg.text for seg in segments).strip()
         self.last_transcript = transcript
 
-        # Update hypothesis buffer and get what to type/correct
-        return self.hypothesis_buffer.update(transcript)
+        # Get incremental edit (smart diff)
+        return self.incremental_buffer.update(transcript)
 
     def trim_buffer(self):
         """Trim buffer to max size, keeping recent audio."""
@@ -594,7 +547,7 @@ class StreamingTranscriber:
     def reset(self):
         """Clear all buffers."""
         self.audio_buffer = np.array([], dtype=np.float32)
-        self.hypothesis_buffer.reset()
+        self.incremental_buffer.reset()
         self.last_transcript = ""
 
 
@@ -623,6 +576,7 @@ class MultiHotkeyHandler:
         """
         self.hotkey_configs = hotkey_configs
         self.callbacks = {}  # mode -> callback
+        self.exit_callback = None  # Called when ESC is pressed
         # Track keys by VK code to avoid object equality issues
         # When Ctrl+Shift is held, pynput may report different key objects
         # for press vs release, causing set.discard() to fail
@@ -636,6 +590,10 @@ class MultiHotkeyHandler:
     def register_callback(self, mode: str, callback):
         """Register callback for a hotkey mode."""
         self.callbacks[mode] = callback
+
+    def register_exit_callback(self, callback):
+        """Register callback for ESC key exit."""
+        self.exit_callback = callback
 
     def _get_vk_code(self, key) -> int | None:
         """Extract VK code from a key, handling both Key enums and KeyCodes."""
@@ -687,6 +645,12 @@ class MultiHotkeyHandler:
 
     def _on_release(self, key):
         """Handle key release - track by VK code."""
+        # Check for ESC key to exit
+        if key == keyboard.Key.esc:
+            if self.exit_callback:
+                self.exit_callback()
+            return  # Exit callback handles shutdown
+
         vk = self._get_vk_code(key)
         if vk is not None:
             self.pressed_vk_codes.discard(vk)
@@ -745,11 +709,26 @@ class VoiceInputApp:
         self.hotkey_handler = MultiHotkeyHandler(hotkey_configs)
         self.hotkey_handler.register_callback("batch", self.toggle_batch)
         self.hotkey_handler.register_callback("streaming", self.toggle_streaming)
+        self.hotkey_handler.register_exit_callback(self._on_exit)
 
         # Batch mode state
         self.is_recording = False
         self.processing = False
         self.lock = threading.Lock()
+
+        # Exit flag
+        self.exit_requested = False
+
+    def _on_exit(self):
+        """Handle ESC key press - clean shutdown."""
+        print("\nESC pressed - exiting...")
+        self.exit_requested = True
+        # Stop any active mode
+        if self.mode == "streaming":
+            self._stop_streaming()
+        elif self.mode == "batch":
+            self.recorder.stop()
+        self.hotkey_handler.stop()
 
     def load_model(self):
         """Load the Whisper model."""
@@ -852,7 +831,7 @@ class VoiceInputApp:
         beep_stop()
 
     def _streaming_worker(self):
-        """Background worker for streaming transcription with LocalAgreement corrections."""
+        """Background worker for real-time streaming transcription with smart diff corrections."""
         last_transcribe_time = time.time()
 
         while not self.stop_event.is_set():
@@ -862,32 +841,36 @@ class VoiceInputApp:
             if chunk is not None:
                 self.streaming_transcriber.add_chunk(chunk)
 
-            # Check if we should transcribe
+            # Check if we should transcribe (time-based, no VAD wait)
             current_time = time.time()
             time_since_last = current_time - last_transcribe_time
 
             if (self.streaming_transcriber.should_transcribe() and
                     time_since_last >= CONFIG["streaming_min_chunk"]):
                 try:
-                    # Transcribe and get result from HypothesisBuffer
+                    # Transcribe and get incremental edit
                     result = self.streaming_transcriber.transcribe_buffer()
-                    text_to_type = result.get("text_to_type", "")
-                    correction = result.get("correction")
+                    backspace_count = result.get("backspace", 0)
+                    text_to_append = result.get("append", "")
 
                     # Check if target window is still focused
                     if self.target_window and get_foreground_window() != self.target_window:
-                        if text_to_type or correction:
+                        if backspace_count or text_to_append:
                             print(f"    [paused - window not focused]")
                     else:
-                        # Apply correction if needed (backspace + retype)
-                        if correction:
-                            apply_correction(correction)
-                            print(f"    🔄 [correction: -{correction['backspace_count']} chars]")
+                        # Apply backspace correction if needed
+                        if backspace_count > 0:
+                            send_backspace_windows(backspace_count)
+                            print(f"    🔄 [-{backspace_count}]", end="")
 
-                        # Type new confirmed text
-                        if text_to_type:
-                            type_text(text_to_type)
-                            print(f"    ✍️  {text_to_type.strip()}")
+                        # Type new text
+                        if text_to_append:
+                            type_text(text_to_append)
+                            # Show what was typed (truncate if long)
+                            display = text_to_append if len(text_to_append) <= 30 else text_to_append[:27] + "..."
+                            print(f" +'{display}'")
+                        elif backspace_count > 0:
+                            print()  # Newline after correction-only
 
                     last_transcribe_time = current_time
 
@@ -963,18 +946,18 @@ class VoiceInputApp:
         print(f"\n✅ Ready!")
         print(f"   [{batch_hotkey}] - Batch mode (record → transcribe → paste)")
         print(f"   [{streaming_hotkey}] - Streaming mode (real-time transcription)")
-        print("Press Ctrl+C to exit.\n")
+        print("Press ESC or Ctrl+C to exit.\n")
 
         # Start hotkey listener
         self.hotkey_handler.start()
 
         try:
-            # Keep main thread alive
-            while True:
+            # Keep main thread alive until exit requested
+            while not self.exit_requested:
                 time.sleep(0.1)
         except KeyboardInterrupt:
-            print("\nExiting...")
-            self.hotkey_handler.stop()
+            print("\nCtrl+C - exiting...")
+            self._on_exit()
 
 
 # ============================================================================
