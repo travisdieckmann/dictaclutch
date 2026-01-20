@@ -85,7 +85,7 @@ def play_beep(frequency: float = 440, duration: float = 0.1):
         print(f"Could not play beep: {e}")
 
 
-def generate_tone_sequence(frequencies: list[float], tone_duration: float = 0.06, gap_duration: float = 0.04) -> np.ndarray:
+def generate_tone_sequence(frequencies: list[float], tone_duration: float = 0.10, gap_duration: float = 0.03) -> np.ndarray:
     """Generate a sequence of tones with gaps between them."""
     sample_rate = 44100
     tones = []
