@@ -205,7 +205,7 @@ def type_char_windows(char: str):
 
 def send_backspace_windows(count: int):
     """Send backspace key N times to delete characters (Windows only)."""
-    if sys.platform != "win32":
+    if sys.platform != "win32" or count <= 0:
         return
 
     VK_BACK = 0x08
@@ -216,6 +216,32 @@ def send_backspace_windows(count: int):
         user32.keybd_event(VK_BACK, 0, 0, 0)
         user32.keybd_event(VK_BACK, 0, KEYEVENTF_KEYUP, 0)
         time.sleep(0.01)
+
+
+def send_key_windows(vk_code: int, count: int = 1):
+    """Send a virtual key N times (Windows only)."""
+    if sys.platform != "win32" or count <= 0:
+        return
+
+    KEYEVENTF_KEYUP = 0x0002
+    user32 = ctypes.windll.user32
+
+    for _ in range(count):
+        user32.keybd_event(vk_code, 0, 0, 0)
+        user32.keybd_event(vk_code, 0, KEYEVENTF_KEYUP, 0)
+        time.sleep(0.005)  # Faster than backspace
+
+
+def send_left_arrow_windows(count: int):
+    """Send left arrow key N times (Windows only)."""
+    VK_LEFT = 0x25
+    send_key_windows(VK_LEFT, count)
+
+
+def send_end_key_windows():
+    """Send End key to go to end of line (Windows only)."""
+    VK_END = 0x23
+    send_key_windows(VK_END, 1)
 
 
 # ============================================================================
@@ -367,14 +393,20 @@ class IncrementalBuffer:
     def update(self, new_transcript: str) -> dict:
         """
         Compare new transcript with typed text and compute minimal edit.
+        Uses prefix + suffix matching to enable efficient middle-text edits
+        via arrow key navigation (e.g., "the cat ran" → "the dog ran").
 
         Returns: {
-            "backspace": N,  # chars to delete
-            "append": "text to add"
+            "strategy": "append" | "backspace" | "arrow",
+            "backspace": N,          # chars to delete
+            "append": "text",        # text to add
+            "left_arrows": N,        # for arrow strategy: arrows to move left
+            "middle_delete": N,      # for arrow strategy: chars to delete in middle
+            "middle_insert": "text", # for arrow strategy: text to insert in middle
         }
         """
         if not new_transcript:
-            return {"backspace": 0, "append": ""}
+            return {"strategy": "append", "backspace": 0, "append": ""}
 
         # Normalize: strip and collapse whitespace
         new_transcript = " ".join(new_transcript.split())
@@ -387,28 +419,73 @@ class IncrementalBuffer:
         # If nothing typed yet, just type the new transcript
         if not self.typed_text:
             self.typed_text = new_transcript
-            return {"backspace": 0, "append": new_transcript}
+            return {"strategy": "append", "backspace": 0, "append": new_transcript}
 
-        # Find longest common prefix (character-level)
-        common_len = 0
-        min_len = min(len(self.typed_text), len(new_transcript))
+        old = self.typed_text
+        new = new_transcript
+
+        # Find longest common prefix
+        prefix_len = 0
+        min_len = min(len(old), len(new))
         for i in range(min_len):
-            if self.typed_text[i] == new_transcript[i]:
-                common_len = i + 1
+            if old[i] == new[i]:
+                prefix_len = i + 1
             else:
                 break
 
-        # Calculate minimal edit
-        chars_to_delete = len(self.typed_text) - common_len
-        chars_to_add = new_transcript[common_len:]
+        # Find longest common suffix (but don't overlap with prefix)
+        suffix_len = 0
+        old_remaining = len(old) - prefix_len
+        new_remaining = len(new) - prefix_len
+        max_suffix = min(old_remaining, new_remaining)
+
+        for i in range(1, max_suffix + 1):
+            if old[-i] == new[-i]:
+                suffix_len = i
+            else:
+                break
+
+        # Calculate what needs to change
+        # Old text structure: [prefix][middle_old][suffix]
+        # New text structure: [prefix][middle_new][suffix]
+        old_middle_len = len(old) - prefix_len - suffix_len
+        new_middle = new[prefix_len:len(new) - suffix_len] if suffix_len > 0 else new[prefix_len:]
+        suffix_text = new[-suffix_len:] if suffix_len > 0 else ""
 
         # Update what we consider "typed"
         self.typed_text = new_transcript
 
-        return {
-            "backspace": chars_to_delete,
-            "append": chars_to_add
-        }
+        # Decide strategy: arrow keys vs backspace
+        # Arrow key approach: left(suffix_len) + backspace(old_middle) + type(new_middle) + End
+        # Backspace approach: backspace(old_middle + suffix) + type(new_middle + suffix)
+
+        # Use arrow strategy if:
+        # 1. There's a common suffix worth preserving (suffix_len >= 3)
+        # 2. There's actually something to change in the middle
+        # 3. Arrow approach saves keystrokes
+        arrow_ops = suffix_len + old_middle_len + len(new_middle) + 1  # arrows + backspaces + typing + End
+        backspace_ops = (old_middle_len + suffix_len) + len(new_middle) + suffix_len  # backspaces + typing
+
+        use_arrow = (suffix_len >= 3 and old_middle_len > 0 and arrow_ops < backspace_ops)
+
+        if use_arrow:
+            return {
+                "strategy": "arrow",
+                "left_arrows": suffix_len,
+                "middle_delete": old_middle_len,
+                "middle_insert": new_middle,
+                "backspace": 0,
+                "append": "",
+            }
+        else:
+            return {
+                "strategy": "backspace",
+                "backspace": old_middle_len + suffix_len,
+                "append": new_middle + suffix_text,
+                "left_arrows": 0,
+                "middle_delete": 0,
+                "middle_insert": "",
+            }
 
     def get_stable_prefix(self) -> str:
         """
@@ -850,27 +927,48 @@ class VoiceInputApp:
                 try:
                     # Transcribe and get incremental edit
                     result = self.streaming_transcriber.transcribe_buffer()
-                    backspace_count = result.get("backspace", 0)
-                    text_to_append = result.get("append", "")
+                    strategy = result.get("strategy", "backspace")
 
                     # Check if target window is still focused
                     if self.target_window and get_foreground_window() != self.target_window:
-                        if backspace_count or text_to_append:
+                        has_changes = (result.get("backspace", 0) or result.get("append", "") or
+                                       result.get("middle_delete", 0) or result.get("middle_insert", ""))
+                        if has_changes:
                             print(f"    [paused - window not focused]")
                     else:
-                        # Apply backspace correction if needed
-                        if backspace_count > 0:
-                            send_backspace_windows(backspace_count)
-                            print(f"    🔄 [-{backspace_count}]", end="")
+                        if strategy == "arrow":
+                            # Arrow key strategy: navigate to middle, edit, return
+                            left_arrows = result.get("left_arrows", 0)
+                            middle_delete = result.get("middle_delete", 0)
+                            middle_insert = result.get("middle_insert", "")
 
-                        # Type new text
-                        if text_to_append:
-                            type_text(text_to_append)
-                            # Show what was typed (truncate if long)
-                            display = text_to_append if len(text_to_append) <= 30 else text_to_append[:27] + "..."
-                            print(f" +'{display}'")
-                        elif backspace_count > 0:
-                            print()  # Newline after correction-only
+                            if left_arrows > 0 or middle_delete > 0 or middle_insert:
+                                # Move cursor left to edit position
+                                send_left_arrow_windows(left_arrows)
+                                # Delete old middle text
+                                send_backspace_windows(middle_delete)
+                                # Insert new middle text
+                                if middle_insert:
+                                    type_text(middle_insert)
+                                # Return to end
+                                send_end_key_windows()
+                                print(f"    🎯 [←{left_arrows} -{middle_delete} +'{middle_insert}' End]")
+
+                        else:
+                            # Backspace strategy: delete from end, retype
+                            backspace_count = result.get("backspace", 0)
+                            text_to_append = result.get("append", "")
+
+                            if backspace_count > 0:
+                                send_backspace_windows(backspace_count)
+                                print(f"    🔄 [-{backspace_count}]", end="")
+
+                            if text_to_append:
+                                type_text(text_to_append)
+                                display = text_to_append if len(text_to_append) <= 30 else text_to_append[:27] + "..."
+                                print(f" +'{display}'")
+                            elif backspace_count > 0:
+                                print()  # Newline after correction-only
 
                     last_transcribe_time = current_time
 
