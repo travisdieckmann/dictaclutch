@@ -993,7 +993,11 @@ class VoiceInputApp:
         self.mode = "batch"
         self.is_recording = True
         self.target_window = get_foreground_window()
+
+        # Play beep BEFORE starting recorder (so beep isn't captured)
         beep_batch_start()
+        time.sleep(0.1)  # Let echo die down
+
         self.recorder.start()
 
     def _stop_batch(self):
@@ -1002,10 +1006,11 @@ class VoiceInputApp:
         self.is_recording = False
         self.processing = True
         self.mode = None
-        beep_batch_stop()
 
-        # Get audio data
+        # Get audio data BEFORE playing beep (so beep isn't captured)
         audio_data = self.recorder.stop()
+
+        beep_batch_stop()
 
         # Process in background thread
         thread = threading.Thread(target=self._process_batch_audio, args=(audio_data,))
@@ -1026,9 +1031,12 @@ class VoiceInputApp:
         self.stop_event.clear()
         self.streaming_transcriber.reset()
 
+        # Play beep BEFORE starting recorder (so beep isn't captured)
+        beep_streaming_start()
+        time.sleep(0.1)  # Let echo die down
+
         # Start audio recording
         self.streaming_recorder.start()
-        beep_streaming_start()
 
         # Start worker thread
         thread = threading.Thread(target=self._streaming_worker, daemon=True)
