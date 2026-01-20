@@ -285,6 +285,57 @@ class AudioRecorder:
             wf.writeframes(audio_int16.tobytes())
 
 
+class StreamingAudioRecorder:
+    """Queue-based audio recorder for real-time streaming."""
+
+    def __init__(self, sample_rate: int = 16000, channels: int = 1):
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.chunk_queue = queue.Queue()  # Thread-safe delivery
+        self.stream = None
+        self.recording = False
+
+    def _audio_callback(self, indata, frames, time_info, status):
+        """Callback for audio stream - adds chunks to queue."""
+        if status:
+            print(f"Audio status: {status}")
+        if self.recording:
+            self.chunk_queue.put(indata.copy())
+
+    def start(self):
+        """Start recording."""
+        self.recording = True
+        # Clear any old chunks
+        while not self.chunk_queue.empty():
+            try:
+                self.chunk_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        self.stream = sd.InputStream(
+            samplerate=self.sample_rate,
+            channels=self.channels,
+            dtype=np.float32,
+            callback=self._audio_callback,
+        )
+        self.stream.start()
+
+    def stop(self):
+        """Stop recording."""
+        self.recording = False
+        if self.stream:
+            self.stream.stop()
+            self.stream.close()
+            self.stream = None
+
+    def get_chunk(self, timeout: float = 0.1) -> np.ndarray | None:
+        """Get next audio chunk (non-blocking with timeout)."""
+        try:
+            return self.chunk_queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+
 # ============================================================================
 # TRANSCRIPTION
 # ============================================================================
@@ -317,6 +368,84 @@ class Transcriber:
             text_parts.append(segment.text)
 
         return " ".join(text_parts).strip()
+
+
+class StreamingTranscriber:
+    """Manages continuous audio buffering and periodic transcription for streaming mode."""
+
+    def __init__(self, model: WhisperModel, config: dict):
+        self.model = model
+        self.sample_rate = config["sample_rate"]
+        self.min_chunk_size = config["streaming_min_chunk"]
+        self.max_buffer_size = config["streaming_buffer_max"]
+        self.language = config["language"]
+
+        # Audio buffer
+        self.audio_buffer = np.array([], dtype=np.float32)
+
+        # Tracking for incremental output
+        self.last_transcript = ""
+        self.last_word_count = 0
+
+    def add_chunk(self, chunk: np.ndarray):
+        """Add audio chunk to rolling buffer."""
+        self.audio_buffer = np.concatenate([self.audio_buffer, chunk.flatten()])
+
+    def get_buffer_duration(self) -> float:
+        """Get current buffer duration in seconds."""
+        return len(self.audio_buffer) / self.sample_rate
+
+    def should_transcribe(self) -> bool:
+        """Check if we should transcribe now (simple time-based for Phase 2)."""
+        return self.get_buffer_duration() >= self.min_chunk_size
+
+    def transcribe_buffer(self) -> str:
+        """
+        Transcribe current buffer and return NEW text to type.
+        Phase 2: Simple incremental - return words beyond what we already typed.
+        """
+        if len(self.audio_buffer) == 0:
+            return ""
+
+        # Transcribe
+        segments, _ = self.model.transcribe(
+            self.audio_buffer,
+            language=self.language,
+            beam_size=5,
+            vad_filter=False,  # We'll add VAD in Phase 4
+        )
+
+        # Collect transcript
+        transcript = " ".join(seg.text for seg in segments).strip()
+
+        # Find new words (simple approach for Phase 2)
+        current_words = transcript.split()
+        new_text = ""
+
+        if len(current_words) > self.last_word_count:
+            # Get words beyond what we already typed
+            new_words = current_words[self.last_word_count:]
+            new_text = " ".join(new_words)
+            if self.last_word_count > 0:
+                new_text = " " + new_text  # Add leading space
+
+            self.last_word_count = len(current_words)
+
+        self.last_transcript = transcript
+        return new_text
+
+    def trim_buffer(self):
+        """Trim buffer to max size, keeping recent audio."""
+        max_samples = int(self.max_buffer_size * self.sample_rate)
+        if len(self.audio_buffer) > max_samples:
+            # Keep the most recent audio
+            self.audio_buffer = self.audio_buffer[-max_samples:]
+
+    def reset(self):
+        """Clear all buffers."""
+        self.audio_buffer = np.array([], dtype=np.float32)
+        self.last_transcript = ""
+        self.last_word_count = 0
 
 
 # ============================================================================
@@ -431,11 +560,20 @@ class VoiceInputApp:
     """Main application coordinating recording, transcription, and input."""
 
     def __init__(self):
+        # Batch mode recorder
         self.recorder = AudioRecorder(
             sample_rate=CONFIG["sample_rate"],
             channels=CONFIG["channels"],
         )
-        self.transcriber = None  # Lazy load
+        self.transcriber = None  # Lazy load (shared model)
+
+        # Streaming mode components
+        self.streaming_recorder = StreamingAudioRecorder(
+            sample_rate=CONFIG["sample_rate"],
+            channels=CONFIG["channels"],
+        )
+        self.streaming_transcriber = None  # Lazy load
+        self.stop_event = threading.Event()  # For clean shutdown
 
         # Mode tracking: None, "batch", or "streaming"
         self.mode = None
@@ -461,6 +599,11 @@ class VoiceInputApp:
             model_size=CONFIG["model_size"],
             device=CONFIG["device"],
             compute_type=CONFIG["compute_type"],
+        )
+        # Initialize streaming transcriber with the same model
+        self.streaming_transcriber = StreamingTranscriber(
+            model=self.transcriber.model,
+            config=CONFIG,
         )
 
     def toggle_batch(self):
@@ -515,18 +658,82 @@ class VoiceInputApp:
         thread.start()
 
     def _start_streaming(self):
-        """Start streaming mode (placeholder for Phase 2)."""
+        """Start streaming mode with real-time transcription."""
+        # Ensure model is loaded
+        if self.streaming_transcriber is None:
+            print("❌ Model not loaded yet!")
+            return
+
         print("\n🎙️  [STREAMING] Mode started (press Ctrl+Shift+K to stop)")
-        print("    ⚠️  Streaming transcription not yet implemented - coming in Phase 2")
         self.mode = "streaming"
         self.target_window = get_foreground_window()
+
+        # Reset streaming components
+        self.stop_event.clear()
+        self.streaming_transcriber.reset()
+
+        # Start audio recording
+        self.streaming_recorder.start()
         beep_start()
 
+        # Start worker thread
+        thread = threading.Thread(target=self._streaming_worker, daemon=True)
+        thread.start()
+
     def _stop_streaming(self):
-        """Stop streaming mode (placeholder for Phase 2)."""
+        """Stop streaming mode."""
         print("⏹️  [STREAMING] Mode stopped")
+
+        # Signal worker to stop
+        self.stop_event.set()
+
+        # Stop recording
+        self.streaming_recorder.stop()
+
         self.mode = None
         beep_stop()
+
+    def _streaming_worker(self):
+        """Background worker for streaming transcription."""
+        last_transcribe_time = time.time()
+
+        while not self.stop_event.is_set():
+            # Get audio chunks from recorder
+            chunk = self.streaming_recorder.get_chunk(timeout=0.1)
+
+            if chunk is not None:
+                self.streaming_transcriber.add_chunk(chunk)
+
+            # Check if we should transcribe
+            current_time = time.time()
+            time_since_last = current_time - last_transcribe_time
+
+            if (self.streaming_transcriber.should_transcribe() and
+                    time_since_last >= CONFIG["streaming_min_chunk"]):
+                try:
+                    # Transcribe and get new text
+                    new_text = self.streaming_transcriber.transcribe_buffer()
+
+                    if new_text:
+                        # Check if target window is still focused
+                        if self.target_window and get_foreground_window() != self.target_window:
+                            print(f"    [paused - window not focused]")
+                        else:
+                            # Type the new text
+                            type_text(new_text)
+                            print(f"    ✍️  {new_text.strip()}")
+
+                    last_transcribe_time = current_time
+
+                    # Trim buffer if getting too large
+                    self.streaming_transcriber.trim_buffer()
+
+                except Exception as e:
+                    print(f"    ❌ Streaming error: {e}")
+                    beep_error()
+                    # Stop streaming on error
+                    self.stop_event.set()
+                    break
 
     def _process_batch_audio(self, audio_data: np.ndarray):
         """Process recorded audio for batch mode (runs in background thread)."""

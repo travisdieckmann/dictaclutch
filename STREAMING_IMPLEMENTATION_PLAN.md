@@ -677,12 +677,12 @@ pip install numpy
   - [x] Update VoiceInputApp with mode tracking
   - [x] Test: Both hotkeys print different messages
 
-- [ ] Phase 2: Basic streaming (no corrections)
-  - [ ] Implement StreamingAudioRecorder (queue-based)
-  - [ ] Implement StreamingTranscriber (simple version)
-  - [ ] Add streaming worker thread with Event shutdown
-  - [ ] Add window focus checking
-  - [ ] Test: Words appear as spoken (duplicates OK)
+- [x] Phase 2: Basic streaming (no corrections) ✅ COMPLETED
+  - [x] Implement StreamingAudioRecorder (queue-based)
+  - [x] Implement StreamingTranscriber (simple version)
+  - [x] Add streaming worker thread with Event shutdown
+  - [x] Add window focus checking
+  - [x] Test: Words appear as spoken (duplicates OK)
 
 - [ ] Phase 3: LocalAgreement & corrections
   - [ ] Implement HypothesisBuffer with word-boundary matching
