@@ -238,10 +238,62 @@ def send_left_arrow_windows(count: int):
     send_key_windows(VK_LEFT, count)
 
 
-def send_end_key_windows():
-    """Send End key to go to end of line (Windows only)."""
-    VK_END = 0x23
-    send_key_windows(VK_END, 1)
+def send_ctrl_left(count: int):
+    """Send Ctrl+Left arrow N times to jump back by words."""
+    if count <= 0:
+        return
+
+    if sys.platform == "win32":
+        VK_LEFT = 0x25
+        VK_CONTROL = 0x11
+        KEYEVENTF_KEYUP = 0x0002
+        user32 = ctypes.windll.user32
+
+        for _ in range(count):
+            user32.keybd_event(VK_CONTROL, 0, 0, 0)
+            user32.keybd_event(VK_LEFT, 0, 0, 0)
+            user32.keybd_event(VK_LEFT, 0, KEYEVENTF_KEYUP, 0)
+            user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+            time.sleep(0.005)
+    else:
+        # Linux: use xdotool
+        for _ in range(count):
+            subprocess.run(["xdotool", "key", "ctrl+Left"], check=False)
+            time.sleep(0.005)
+
+
+def send_ctrl_backspace(count: int):
+    """Send Ctrl+Backspace N times to delete words."""
+    if count <= 0:
+        return
+
+    if sys.platform == "win32":
+        VK_BACK = 0x08
+        VK_CONTROL = 0x11
+        KEYEVENTF_KEYUP = 0x0002
+        user32 = ctypes.windll.user32
+
+        for _ in range(count):
+            user32.keybd_event(VK_CONTROL, 0, 0, 0)
+            user32.keybd_event(VK_BACK, 0, 0, 0)
+            user32.keybd_event(VK_BACK, 0, KEYEVENTF_KEYUP, 0)
+            user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+            time.sleep(0.01)
+    else:
+        # Linux: use xdotool
+        for _ in range(count):
+            subprocess.run(["xdotool", "key", "ctrl+BackSpace"], check=False)
+            time.sleep(0.01)
+
+
+def send_end_key():
+    """Send End key to go to end of line."""
+    if sys.platform == "win32":
+        VK_END = 0x23
+        send_key_windows(VK_END, 1)
+    else:
+        # Linux: use xdotool
+        subprocess.run(["xdotool", "key", "End"], check=False)
 
 
 # ============================================================================
@@ -390,19 +442,34 @@ class IncrementalBuffer:
         self.typed_text: str = ""  # What's actually been typed to the screen
         self.transcript_history: list[str] = []  # Ring buffer of recent transcripts
 
+    def _count_words(self, text: str) -> int:
+        """Count words in text."""
+        return len(text.split()) if text.strip() else 0
+
+    def _get_word_at_end(self, text: str, word_count: int) -> str:
+        """Get the last N words from text."""
+        words = text.split()
+        if word_count >= len(words):
+            return text
+        return " ".join(words[-word_count:])
+
     def update(self, new_transcript: str) -> dict:
         """
         Compare new transcript with typed text and compute minimal edit.
-        Uses prefix + suffix matching to enable efficient middle-text edits
-        via arrow key navigation (e.g., "the cat ran" → "the dog ran").
+        Uses word-based Ctrl+Arrow navigation for efficient middle-text edits.
+
+        Strategies:
+        - "append": Just add text at end (no changes needed)
+        - "backspace": Delete from end, retype (fallback)
+        - "word_jump": Use Ctrl+Left to jump words, Ctrl+Backspace to delete words
 
         Returns: {
-            "strategy": "append" | "backspace" | "arrow",
-            "backspace": N,          # chars to delete
-            "append": "text",        # text to add
-            "left_arrows": N,        # for arrow strategy: arrows to move left
-            "middle_delete": N,      # for arrow strategy: chars to delete in middle
-            "middle_insert": "text", # for arrow strategy: text to insert in middle
+            "strategy": "append" | "backspace" | "word_jump",
+            "backspace": N,              # chars to delete (backspace strategy)
+            "append": "text",            # text to add
+            "word_jumps": N,             # Ctrl+Left count (word_jump strategy)
+            "word_deletes": N,           # Ctrl+Backspace count (word_jump strategy)
+            "word_insert": "text",       # text to insert after deletion
         }
         """
         if not new_transcript:
@@ -424,7 +491,36 @@ class IncrementalBuffer:
         old = self.typed_text
         new = new_transcript
 
-        # Find longest common prefix
+        # Word-based analysis
+        old_words = old.split()
+        new_words = new.split()
+
+        # Find common word prefix
+        common_prefix_words = 0
+        for i in range(min(len(old_words), len(new_words))):
+            if old_words[i] == new_words[i]:
+                common_prefix_words = i + 1
+            else:
+                break
+
+        # Find common word suffix (but don't overlap with prefix)
+        common_suffix_words = 0
+        old_remaining = len(old_words) - common_prefix_words
+        new_remaining = len(new_words) - common_prefix_words
+        max_suffix = min(old_remaining, new_remaining)
+
+        for i in range(1, max_suffix + 1):
+            if old_words[-i] == new_words[-i]:
+                common_suffix_words = i
+            else:
+                break
+
+        # Calculate word-level changes
+        old_middle_words = len(old_words) - common_prefix_words - common_suffix_words
+        new_middle_words = new_words[common_prefix_words:len(new_words) - common_suffix_words] if common_suffix_words > 0 else new_words[common_prefix_words:]
+        new_middle_text = " ".join(new_middle_words)
+
+        # Also do character-level for fallback
         prefix_len = 0
         min_len = min(len(old), len(new))
         for i in range(min_len):
@@ -433,47 +529,53 @@ class IncrementalBuffer:
             else:
                 break
 
-        # Find longest common suffix (but don't overlap with prefix)
         suffix_len = 0
-        old_remaining = len(old) - prefix_len
-        new_remaining = len(new) - prefix_len
-        max_suffix = min(old_remaining, new_remaining)
+        old_char_remaining = len(old) - prefix_len
+        new_char_remaining = len(new) - prefix_len
+        max_char_suffix = min(old_char_remaining, new_char_remaining)
 
-        for i in range(1, max_suffix + 1):
+        for i in range(1, max_char_suffix + 1):
             if old[-i] == new[-i]:
                 suffix_len = i
             else:
                 break
 
-        # Calculate what needs to change
-        # Old text structure: [prefix][middle_old][suffix]
-        # New text structure: [prefix][middle_new][suffix]
         old_middle_len = len(old) - prefix_len - suffix_len
-        new_middle = new[prefix_len:len(new) - suffix_len] if suffix_len > 0 else new[prefix_len:]
+        new_middle_char = new[prefix_len:len(new) - suffix_len] if suffix_len > 0 else new[prefix_len:]
         suffix_text = new[-suffix_len:] if suffix_len > 0 else ""
 
         # Update what we consider "typed"
         self.typed_text = new_transcript
 
-        # Decide strategy: arrow keys vs backspace
-        # Arrow key approach: left(suffix_len) + backspace(old_middle) + type(new_middle) + End
-        # Backspace approach: backspace(old_middle + suffix) + type(new_middle + suffix)
+        # Calculate operation costs
+        # Word jump: Ctrl+Left × (suffix_words) + Ctrl+Backspace × (old_middle_words) + type + End
+        word_jump_ops = common_suffix_words + old_middle_words + len(new_middle_text) + 1
 
-        # Use arrow strategy if:
-        # 1. There's a common suffix worth preserving (suffix_len >= 3)
-        # 2. There's actually something to change in the middle
-        # 3. Arrow approach saves keystrokes
-        arrow_ops = suffix_len + old_middle_len + len(new_middle) + 1  # arrows + backspaces + typing + End
-        backspace_ops = (old_middle_len + suffix_len) + len(new_middle) + suffix_len  # backspaces + typing
+        # Backspace: backspace × (old_middle_chars + suffix_chars) + type
+        backspace_ops = (old_middle_len + suffix_len) + len(new_middle_char) + suffix_len
 
-        use_arrow = (suffix_len >= 3 and old_middle_len > 0 and arrow_ops < backspace_ops)
+        # Decide strategy
+        # Use word_jump if:
+        # 1. There are suffix words to preserve (common_suffix_words >= 1)
+        # 2. There are middle words to delete (old_middle_words >= 1)
+        # 3. Word approach is more efficient
+        use_word_jump = (
+            common_suffix_words >= 1 and
+            old_middle_words >= 1 and
+            word_jump_ops < backspace_ops
+        )
 
-        if use_arrow:
+        if use_word_jump:
+            # Need to add trailing space if inserting before more words
+            insert_text = new_middle_text
+            if new_middle_text and common_suffix_words > 0:
+                insert_text = new_middle_text + " "
+
             return {
-                "strategy": "arrow",
-                "left_arrows": suffix_len,
-                "middle_delete": old_middle_len,
-                "middle_insert": new_middle,
+                "strategy": "word_jump",
+                "word_jumps": common_suffix_words,
+                "word_deletes": old_middle_words,
+                "word_insert": insert_text,
                 "backspace": 0,
                 "append": "",
             }
@@ -481,10 +583,10 @@ class IncrementalBuffer:
             return {
                 "strategy": "backspace",
                 "backspace": old_middle_len + suffix_len,
-                "append": new_middle + suffix_text,
-                "left_arrows": 0,
-                "middle_delete": 0,
-                "middle_insert": "",
+                "append": new_middle_char + suffix_text,
+                "word_jumps": 0,
+                "word_deletes": 0,
+                "word_insert": "",
             }
 
     def get_stable_prefix(self) -> str:
@@ -932,27 +1034,27 @@ class VoiceInputApp:
                     # Check if target window is still focused
                     if self.target_window and get_foreground_window() != self.target_window:
                         has_changes = (result.get("backspace", 0) or result.get("append", "") or
-                                       result.get("middle_delete", 0) or result.get("middle_insert", ""))
+                                       result.get("word_deletes", 0) or result.get("word_insert", ""))
                         if has_changes:
                             print(f"    [paused - window not focused]")
                     else:
-                        if strategy == "arrow":
-                            # Arrow key strategy: navigate to middle, edit, return
-                            left_arrows = result.get("left_arrows", 0)
-                            middle_delete = result.get("middle_delete", 0)
-                            middle_insert = result.get("middle_insert", "")
+                        if strategy == "word_jump":
+                            # Word-jump strategy: Ctrl+Left to jump words, Ctrl+Backspace to delete
+                            word_jumps = result.get("word_jumps", 0)
+                            word_deletes = result.get("word_deletes", 0)
+                            word_insert = result.get("word_insert", "")
 
-                            if left_arrows > 0 or middle_delete > 0 or middle_insert:
-                                # Move cursor left to edit position
-                                send_left_arrow_windows(left_arrows)
-                                # Delete old middle text
-                                send_backspace_windows(middle_delete)
-                                # Insert new middle text
-                                if middle_insert:
-                                    type_text(middle_insert)
+                            if word_jumps > 0 or word_deletes > 0 or word_insert:
+                                # Jump backward by words
+                                send_ctrl_left(word_jumps)
+                                # Delete words
+                                send_ctrl_backspace(word_deletes)
+                                # Insert replacement
+                                if word_insert:
+                                    type_text(word_insert)
                                 # Return to end
-                                send_end_key_windows()
-                                print(f"    🎯 [←{left_arrows} -{middle_delete} +'{middle_insert}' End]")
+                                send_end_key()
+                                print(f"    🎯 [Ctrl←×{word_jumps} Ctrl⌫×{word_deletes} +'{word_insert.strip()}' End]")
 
                         else:
                             # Backspace strategy: delete from end, retype
