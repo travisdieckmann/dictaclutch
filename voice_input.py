@@ -491,6 +491,7 @@ class StreamingTranscriber:
         self.min_chunk_size = config["streaming_min_chunk"]
         self.max_buffer_size = config["streaming_buffer_max"]
         self.language = config["language"]
+        self.use_vad = config["streaming_use_vad"]
 
         # Audio buffer
         self.audio_buffer = np.array([], dtype=np.float32)
@@ -503,6 +504,22 @@ class StreamingTranscriber:
         # Tracking
         self.last_transcript = ""
 
+        # VAD from faster-whisper (no extra dependency!)
+        self.vad_model = None
+        self.get_speech_ts = None
+        if self.use_vad:
+            try:
+                from faster_whisper.vad import get_speech_timestamps, VadOptions
+                self.get_speech_ts = get_speech_timestamps
+                self.vad_options = VadOptions(
+                    min_silence_duration_ms=500,  # 0.5s silence to trigger
+                    speech_pad_ms=200,
+                )
+                print("    VAD enabled (faster-whisper built-in)")
+            except ImportError:
+                print("    ⚠️ VAD not available, using time-based triggers")
+                self.use_vad = False
+
     def add_chunk(self, chunk: np.ndarray):
         """Add audio chunk to rolling buffer."""
         self.audio_buffer = np.concatenate([self.audio_buffer, chunk.flatten()])
@@ -512,8 +529,33 @@ class StreamingTranscriber:
         return len(self.audio_buffer) / self.sample_rate
 
     def should_transcribe(self) -> bool:
-        """Check if we should transcribe now (simple time-based)."""
-        return self.get_buffer_duration() >= self.min_chunk_size
+        """Check if we should transcribe now (VAD-enhanced or time-based)."""
+        duration = self.get_buffer_duration()
+
+        if duration < self.min_chunk_size:
+            return False
+
+        if self.use_vad and self.get_speech_ts is not None:
+            try:
+                # Check for speech end (silence detected)
+                timestamps = self.get_speech_ts(self.audio_buffer, self.vad_options)
+                if timestamps:
+                    last_end = timestamps[-1]["end"] / self.sample_rate
+                    # If last speech ended > 0.5s ago, transcribe now
+                    if duration - last_end > 0.5:
+                        return True
+
+                # Force transcribe if buffer too large
+                if duration > self.max_buffer_size:
+                    return True
+
+                return False
+            except Exception:
+                # Fall back to time-based on VAD error
+                pass
+
+        # No VAD or VAD failed - transcribe at fixed intervals
+        return duration >= self.min_chunk_size
 
     def transcribe_buffer(self) -> dict:
         """
@@ -532,7 +574,7 @@ class StreamingTranscriber:
             self.audio_buffer,
             language=self.language,
             beam_size=5,
-            vad_filter=False,  # We'll add VAD in Phase 4
+            vad_filter=False,  # We handle VAD ourselves for streaming
         )
 
         # Collect transcript
@@ -552,8 +594,8 @@ class StreamingTranscriber:
     def reset(self):
         """Clear all buffers."""
         self.audio_buffer = np.array([], dtype=np.float32)
+        self.hypothesis_buffer.reset()
         self.last_transcript = ""
-        self.last_word_count = 0
 
 
 # ============================================================================
