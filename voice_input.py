@@ -205,6 +205,29 @@ def type_char_windows(char: str):
     user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
 
 
+def send_backspace_windows(count: int):
+    """Send backspace key N times to delete characters (Windows only)."""
+    if sys.platform != "win32":
+        return
+
+    VK_BACK = 0x08
+    KEYEVENTF_KEYUP = 0x0002
+    user32 = ctypes.windll.user32
+
+    for _ in range(count):
+        user32.keybd_event(VK_BACK, 0, 0, 0)
+        user32.keybd_event(VK_BACK, 0, KEYEVENTF_KEYUP, 0)
+        time.sleep(0.01)
+
+
+def apply_correction(correction: dict):
+    """Apply correction by backspacing and typing replacement."""
+    if correction and correction.get("backspace_count", 0) > 0:
+        send_backspace_windows(correction["backspace_count"])
+        if correction.get("replacement"):
+            type_text(correction["replacement"])
+
+
 # ============================================================================
 # WINDOW FOCUS DETECTION
 # ============================================================================
@@ -337,6 +360,95 @@ class StreamingAudioRecorder:
 
 
 # ============================================================================
+# HYPOTHESIS BUFFER (LocalAgreement Policy)
+# ============================================================================
+
+
+class HypothesisBuffer:
+    """
+    Tracks transcription hypotheses using word-boundary matching to detect stable text.
+    Implements LocalAgreement-N policy for streaming transcription.
+    """
+
+    def __init__(self, agreement_n: int = 2):
+        self.history: list[str] = []           # Last N transcriptions
+        self.committed_words: list[str] = []   # Confirmed stable words
+        self.typed_char_count: int = 0         # Actual chars sent to keyboard
+        self.agreement_n: int = agreement_n
+
+    def update(self, new_transcript: str) -> dict:
+        """
+        Add new transcript and determine what's stable using word-boundary matching.
+
+        Returns: {
+            "text_to_type": "new words to type",
+            "correction": {
+                "backspace_count": 5,
+                "replacement": "corrected words"
+            } or None
+        }
+        """
+        self.history.append(new_transcript)
+        if len(self.history) > self.agreement_n + 1:
+            self.history.pop(0)
+
+        if len(self.history) >= self.agreement_n:
+            # Find common word prefix across last N transcripts
+            common_words = self._find_common_word_prefix(self.history[-self.agreement_n:])
+
+            if len(common_words) > len(self.committed_words):
+                # New confirmed words
+                new_words = common_words[len(self.committed_words):]
+                text_to_type = " ".join(new_words)
+                if self.committed_words:  # Add leading space if not first words
+                    text_to_type = " " + text_to_type
+                self.committed_words = common_words.copy()
+                self.typed_char_count += len(text_to_type)
+                return {"text_to_type": text_to_type, "correction": None}
+
+            elif len(common_words) < len(self.committed_words):
+                # CORRECTION: Previous words were wrong
+                wrong_words = self.committed_words[len(common_words):]
+                wrong_text = " ".join(wrong_words)
+                if common_words:  # Account for space before wrong words
+                    wrong_text = " " + wrong_text
+
+                backspace_count = len(wrong_text)
+                self.committed_words = common_words.copy()
+                self.typed_char_count -= backspace_count
+
+                return {
+                    "text_to_type": "",
+                    "correction": {
+                        "backspace_count": backspace_count,
+                        "replacement": ""
+                    }
+                }
+
+        return {"text_to_type": "", "correction": None}
+
+    def _find_common_word_prefix(self, transcripts: list[str]) -> list[str]:
+        """Find longest common prefix at word boundaries."""
+        words_lists = [t.split() for t in transcripts]
+        if not words_lists or not all(words_lists):
+            return []
+
+        common_words = []
+        for word_tuple in zip(*words_lists):
+            if len(set(word_tuple)) == 1:
+                common_words.append(word_tuple[0])
+            else:
+                break
+        return common_words
+
+    def reset(self):
+        """Clear all buffers (on recording start/stop)."""
+        self.history.clear()
+        self.committed_words.clear()
+        self.typed_char_count = 0
+
+
+# ============================================================================
 # TRANSCRIPTION
 # ============================================================================
 
@@ -383,9 +495,13 @@ class StreamingTranscriber:
         # Audio buffer
         self.audio_buffer = np.array([], dtype=np.float32)
 
-        # Tracking for incremental output
+        # Hypothesis buffer for LocalAgreement policy
+        self.hypothesis_buffer = HypothesisBuffer(
+            agreement_n=config["streaming_agreement_n"]
+        )
+
+        # Tracking
         self.last_transcript = ""
-        self.last_word_count = 0
 
     def add_chunk(self, chunk: np.ndarray):
         """Add audio chunk to rolling buffer."""
@@ -396,16 +512,20 @@ class StreamingTranscriber:
         return len(self.audio_buffer) / self.sample_rate
 
     def should_transcribe(self) -> bool:
-        """Check if we should transcribe now (simple time-based for Phase 2)."""
+        """Check if we should transcribe now (simple time-based)."""
         return self.get_buffer_duration() >= self.min_chunk_size
 
-    def transcribe_buffer(self) -> str:
+    def transcribe_buffer(self) -> dict:
         """
-        Transcribe current buffer and return NEW text to type.
-        Phase 2: Simple incremental - return words beyond what we already typed.
+        Transcribe current buffer and return result from HypothesisBuffer.
+
+        Returns: {
+            "text_to_type": "new words to type",
+            "correction": {"backspace_count": N, "replacement": "..."} or None
+        }
         """
         if len(self.audio_buffer) == 0:
-            return ""
+            return {"text_to_type": "", "correction": None}
 
         # Transcribe
         segments, _ = self.model.transcribe(
@@ -417,22 +537,10 @@ class StreamingTranscriber:
 
         # Collect transcript
         transcript = " ".join(seg.text for seg in segments).strip()
-
-        # Find new words (simple approach for Phase 2)
-        current_words = transcript.split()
-        new_text = ""
-
-        if len(current_words) > self.last_word_count:
-            # Get words beyond what we already typed
-            new_words = current_words[self.last_word_count:]
-            new_text = " ".join(new_words)
-            if self.last_word_count > 0:
-                new_text = " " + new_text  # Add leading space
-
-            self.last_word_count = len(current_words)
-
         self.last_transcript = transcript
-        return new_text
+
+        # Update hypothesis buffer and get what to type/correct
+        return self.hypothesis_buffer.update(transcript)
 
     def trim_buffer(self):
         """Trim buffer to max size, keeping recent audio."""
@@ -694,7 +802,7 @@ class VoiceInputApp:
         beep_stop()
 
     def _streaming_worker(self):
-        """Background worker for streaming transcription."""
+        """Background worker for streaming transcription with LocalAgreement corrections."""
         last_transcribe_time = time.time()
 
         while not self.stop_event.is_set():
@@ -711,17 +819,25 @@ class VoiceInputApp:
             if (self.streaming_transcriber.should_transcribe() and
                     time_since_last >= CONFIG["streaming_min_chunk"]):
                 try:
-                    # Transcribe and get new text
-                    new_text = self.streaming_transcriber.transcribe_buffer()
+                    # Transcribe and get result from HypothesisBuffer
+                    result = self.streaming_transcriber.transcribe_buffer()
+                    text_to_type = result.get("text_to_type", "")
+                    correction = result.get("correction")
 
-                    if new_text:
-                        # Check if target window is still focused
-                        if self.target_window and get_foreground_window() != self.target_window:
+                    # Check if target window is still focused
+                    if self.target_window and get_foreground_window() != self.target_window:
+                        if text_to_type or correction:
                             print(f"    [paused - window not focused]")
-                        else:
-                            # Type the new text
-                            type_text(new_text)
-                            print(f"    ✍️  {new_text.strip()}")
+                    else:
+                        # Apply correction if needed (backspace + retype)
+                        if correction:
+                            apply_correction(correction)
+                            print(f"    🔄 [correction: -{correction['backspace_count']} chars]")
+
+                        # Type new confirmed text
+                        if text_to_type:
+                            type_text(text_to_type)
+                            print(f"    ✍️  {text_to_type.strip()}")
 
                     last_transcribe_time = current_time
 

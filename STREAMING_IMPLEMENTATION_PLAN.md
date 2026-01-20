@@ -684,13 +684,13 @@ pip install numpy
   - [x] Add window focus checking
   - [x] Test: Words appear as spoken (duplicates OK)
 
-- [ ] Phase 3: LocalAgreement & corrections
-  - [ ] Implement HypothesisBuffer with word-boundary matching
-  - [ ] Add send_backspace_windows()
-  - [ ] Add apply_correction()
-  - [ ] Integrate hypothesis buffer into streaming
-  - [ ] Add error handling (stop + error beep)
-  - [ ] Test: Corrections handled gracefully
+- [x] Phase 3: LocalAgreement & corrections ✅ COMPLETED
+  - [x] Implement HypothesisBuffer with word-boundary matching
+  - [x] Add send_backspace_windows()
+  - [x] Add apply_correction()
+  - [x] Integrate hypothesis buffer into streaming
+  - [x] Add error handling (stop + error beep)
+  - [x] Test: Corrections handled gracefully
 
 - [ ] Phase 4: VAD & optimization
   - [ ] Use faster_whisper.vad (built-in)
