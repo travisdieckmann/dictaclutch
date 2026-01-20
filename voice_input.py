@@ -33,9 +33,17 @@ else:
 
 CONFIG = {
     # Batch mode hotkey (existing behavior): Ctrl+Shift+J
-    "hotkey_batch": {keyboard.Key.ctrl, keyboard.Key.shift, keyboard.KeyCode.from_char("j")},
+    "hotkey_batch": {
+        keyboard.Key.ctrl,
+        keyboard.Key.shift,
+        keyboard.KeyCode.from_char("j"),
+    },
     # Streaming mode hotkey (new): Ctrl+Shift+K
-    "hotkey_streaming": {keyboard.Key.ctrl, keyboard.Key.shift, keyboard.KeyCode.from_char("k")},
+    "hotkey_streaming": {
+        keyboard.Key.ctrl,
+        keyboard.Key.shift,
+        keyboard.KeyCode.from_char("k"),
+    },
     # Whisper model: tiny, base, small, medium, large-v2, large-v3
     # Recommended for 4GB VRAM: small
     "model_size": "small",
@@ -54,8 +62,8 @@ CONFIG = {
     "beep_on_start": True,
     "beep_on_stop": True,
     # Streaming mode settings
-    "streaming_min_chunk": 0.5,         # Seconds between transcription attempts (lower = more real-time)
-    "streaming_buffer_max": 30.0,       # Maximum buffer size (seconds) before trimming
+    "streaming_min_chunk": 0.5,  # Seconds between transcription attempts (lower = more real-time)
+    "streaming_buffer_max": 30.0,  # Maximum buffer size (seconds) before trimming
 }
 
 # ============================================================================
@@ -85,7 +93,9 @@ def play_beep(frequency: float = 440, duration: float = 0.1):
         print(f"Could not play beep: {e}")
 
 
-def generate_tone_sequence(frequencies: list[float], tone_duration: float = 0.10, gap_duration: float = 0.03) -> np.ndarray:
+def generate_tone_sequence(
+    frequencies: list[float], tone_duration: float = 0.10, gap_duration: float = 0.03
+) -> np.ndarray:
     """Generate a sequence of tones with gaps between them."""
     sample_rate = 44100
     tones = []
@@ -114,29 +124,29 @@ def play_tone_sequence(frequencies: list[float]):
 def beep_batch_start():
     """Beep indicating batch recording started (4-tone ascending, lower range)."""
     if CONFIG["beep_on_start"]:
-        # E4 → G4 → A4 → C5 (warm, steady progression)
-        play_tone_sequence([330, 392, 440, 523])
+        # E4 → A4 → G4 → C5 (warm, steady progression)
+        play_tone_sequence([523, 392, 440, 330])
 
 
 def beep_batch_stop():
     """Beep indicating batch recording stopped (4-tone descending, lower range)."""
     if CONFIG["beep_on_stop"]:
-        # C5 → A4 → G4 → E4
-        play_tone_sequence([523, 440, 392, 330])
+        # C5 → G4 → A4 → E4
+        play_tone_sequence([330, 440, 392, 523])
 
 
 def beep_streaming_start():
     """Beep indicating streaming started (4-tone ascending, higher range)."""
     if CONFIG["beep_on_start"]:
-        # C5 → D5 → E5 → G5 (bright, dynamic progression)
-        play_tone_sequence([523, 587, 659, 784])
+        # G5 → D5 → E5 → C5
+        play_tone_sequence([784, 587, 659, 523])
 
 
 def beep_streaming_stop():
     """Beep indicating streaming stopped (4-tone descending, higher range)."""
     if CONFIG["beep_on_stop"]:
-        # G5 → E5 → D5 → C5
-        play_tone_sequence([784, 659, 587, 523])
+        # C5 → E5 → D5 → G5 (bright, dynamic progression)
+        play_tone_sequence([523, 659, 587, 784])
 
 
 def beep_error():
@@ -555,7 +565,11 @@ class IncrementalBuffer:
 
         # Calculate word-level changes
         old_middle_words = len(old_words) - common_prefix_words - common_suffix_words
-        new_middle_words = new_words[common_prefix_words:len(new_words) - common_suffix_words] if common_suffix_words > 0 else new_words[common_prefix_words:]
+        new_middle_words = (
+            new_words[common_prefix_words : len(new_words) - common_suffix_words]
+            if common_suffix_words > 0
+            else new_words[common_prefix_words:]
+        )
         new_middle_text = " ".join(new_middle_words)
 
         # Also do character-level for fallback
@@ -579,7 +593,11 @@ class IncrementalBuffer:
                 break
 
         old_middle_len = len(old) - prefix_len - suffix_len
-        new_middle_char = new[prefix_len:len(new) - suffix_len] if suffix_len > 0 else new[prefix_len:]
+        new_middle_char = (
+            new[prefix_len : len(new) - suffix_len]
+            if suffix_len > 0
+            else new[prefix_len:]
+        )
         suffix_text = new[-suffix_len:] if suffix_len > 0 else ""
 
         # Update what we consider "typed"
@@ -587,10 +605,14 @@ class IncrementalBuffer:
 
         # Calculate operation costs
         # Word jump: Ctrl+Left × (suffix_words) + Ctrl+Backspace × (old_middle_words) + type + End
-        word_jump_ops = common_suffix_words + old_middle_words + len(new_middle_text) + 1
+        word_jump_ops = (
+            common_suffix_words + old_middle_words + len(new_middle_text) + 1
+        )
 
         # Backspace: backspace × (old_middle_chars + suffix_chars) + type
-        backspace_ops = (old_middle_len + suffix_len) + len(new_middle_char) + suffix_len
+        backspace_ops = (
+            (old_middle_len + suffix_len) + len(new_middle_char) + suffix_len
+        )
 
         # Decide strategy
         # Use word_jump if:
@@ -598,9 +620,9 @@ class IncrementalBuffer:
         # 2. There are middle words to delete (old_middle_words >= 1)
         # 3. Word approach is more efficient
         use_word_jump = (
-            common_suffix_words >= 1 and
-            old_middle_words >= 1 and
-            word_jump_ops < backspace_ops
+            common_suffix_words >= 1
+            and old_middle_words >= 1
+            and word_jump_ops < backspace_ops
         )
 
         if use_word_jump:
@@ -1070,17 +1092,26 @@ class VoiceInputApp:
             current_time = time.time()
             time_since_last = current_time - last_transcribe_time
 
-            if (self.streaming_transcriber.should_transcribe() and
-                    time_since_last >= CONFIG["streaming_min_chunk"]):
+            if (
+                self.streaming_transcriber.should_transcribe()
+                and time_since_last >= CONFIG["streaming_min_chunk"]
+            ):
                 try:
                     # Transcribe and get incremental edit
                     result = self.streaming_transcriber.transcribe_buffer()
                     strategy = result.get("strategy", "backspace")
 
                     # Check if target window is still focused
-                    if self.target_window and get_foreground_window() != self.target_window:
-                        has_changes = (result.get("backspace", 0) or result.get("append", "") or
-                                       result.get("word_deletes", 0) or result.get("word_insert", ""))
+                    if (
+                        self.target_window
+                        and get_foreground_window() != self.target_window
+                    ):
+                        has_changes = (
+                            result.get("backspace", 0)
+                            or result.get("append", "")
+                            or result.get("word_deletes", 0)
+                            or result.get("word_insert", "")
+                        )
                         if has_changes:
                             print(f"    [paused - window not focused]")
                     else:
@@ -1100,7 +1131,9 @@ class VoiceInputApp:
                                     type_text(word_insert)
                                 # Return to end
                                 send_end_key()
-                                print(f"    🎯 [Ctrl←×{word_jumps} Ctrl⌫×{word_deletes} +'{word_insert.strip()}' End]")
+                                print(
+                                    f"    🎯 [Ctrl←×{word_jumps} Ctrl⌫×{word_deletes} +'{word_insert.strip()}' End]"
+                                )
 
                         else:
                             # Backspace strategy: delete from end, retype
@@ -1113,7 +1146,11 @@ class VoiceInputApp:
 
                             if text_to_append:
                                 type_text(text_to_append)
-                                display = text_to_append if len(text_to_append) <= 30 else text_to_append[:27] + "..."
+                                display = (
+                                    text_to_append
+                                    if len(text_to_append) <= 30
+                                    else text_to_append[:27] + "..."
+                                )
                                 print(f" +'{display}'")
                             elif backspace_count > 0:
                                 print()  # Newline after correction-only
@@ -1182,7 +1219,11 @@ class VoiceInputApp:
         # Format hotkeys for display
         def format_hotkey(hotkey_set):
             return " + ".join(
-                k.name if hasattr(k, "name") else (k.char if hasattr(k, "char") else str(k))
+                (
+                    k.name
+                    if hasattr(k, "name")
+                    else (k.char if hasattr(k, "char") else str(k))
+                )
                 for k in hotkey_set
             )
 
