@@ -606,6 +606,10 @@ class StreamingTranscriber:
 class MultiHotkeyHandler:
     """Handles multiple global hotkey combinations with separate callbacks."""
 
+    # VK codes for modifier keys (used for consistent tracking)
+    CTRL_VK_CODES = {162, 163}  # VK_LCONTROL, VK_RCONTROL
+    SHIFT_VK_CODES = {160, 161}  # VK_LSHIFT, VK_RSHIFT
+
     def __init__(self, hotkey_configs: dict):
         """
         Initialize with hotkey configurations.
@@ -619,7 +623,10 @@ class MultiHotkeyHandler:
         """
         self.hotkey_configs = hotkey_configs
         self.callbacks = {}  # mode -> callback
-        self.current_keys = set()
+        # Track keys by VK code to avoid object equality issues
+        # When Ctrl+Shift is held, pynput may report different key objects
+        # for press vs release, causing set.discard() to fail
+        self.pressed_vk_codes: set[int] = set()
         self.triggered = {}  # mode -> bool (prevent repeat)
         self.listener = None
 
@@ -630,48 +637,47 @@ class MultiHotkeyHandler:
         """Register callback for a hotkey mode."""
         self.callbacks[mode] = callback
 
-    def _get_letter_key(self, hotkey_set: set) -> str | None:
-        """Extract the letter key from a hotkey configuration."""
+    def _get_vk_code(self, key) -> int | None:
+        """Extract VK code from a key, handling both Key enums and KeyCodes."""
+        # KeyCode objects have a .vk attribute
+        if hasattr(key, "vk") and key.vk is not None:
+            return key.vk
+        # Key enums (ctrl, shift, etc.) have a .value attribute with vk
+        if hasattr(key, "value") and hasattr(key.value, "vk"):
+            return key.value.vk
+        return None
+
+    def _get_letter_vk(self, hotkey_set: set) -> int | None:
+        """Extract the VK code for the letter key from a hotkey configuration."""
         for k in hotkey_set:
             if hasattr(k, "char") and k.char:
-                return k.char.lower()
+                # Convert letter to VK code (A=65, B=66, ..., J=74, K=75, ...)
+                return ord(k.char.upper())
         return None
 
     def _is_hotkey_pressed(self, mode: str) -> bool:
-        """Check if specific hotkey combo is pressed."""
+        """Check if specific hotkey combo is pressed using VK codes."""
         required = self.hotkey_configs[mode]
 
-        # Check for Ctrl (any variant)
-        has_ctrl = any(
-            k in [keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r]
-            for k in self.current_keys
-        )
+        # Check for Ctrl (any variant) by VK code
+        has_ctrl = bool(self.pressed_vk_codes & self.CTRL_VK_CODES)
 
-        # Check for Shift (any variant)
-        has_shift = any(
-            k in [keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r]
-            for k in self.current_keys
-        )
+        # Check for Shift (any variant) by VK code
+        has_shift = bool(self.pressed_vk_codes & self.SHIFT_VK_CODES)
 
-        # Get the letter key from the config
-        letter_key = self._get_letter_key(required)
+        # Get the letter VK code from the config
+        letter_vk = self._get_letter_vk(required)
 
-        # Check for the letter key by char or virtual key code
-        has_letter = False
-        if letter_key:
-            # Map letter to VK code (A=65, B=66, ..., J=74, K=75, ...)
-            vk_code = ord(letter_key.upper())
-            has_letter = any(
-                (hasattr(k, "vk") and k.vk == vk_code)
-                or (hasattr(k, "char") and k.char and k.char.lower() == letter_key)
-                for k in self.current_keys
-            )
+        # Check if the letter key is pressed by VK code
+        has_letter = letter_vk is not None and letter_vk in self.pressed_vk_codes
 
         return has_ctrl and has_shift and has_letter
 
     def _on_press(self, key):
-        """Handle key press."""
-        self.current_keys.add(key)
+        """Handle key press - track by VK code."""
+        vk = self._get_vk_code(key)
+        if vk is not None:
+            self.pressed_vk_codes.add(vk)
 
         for mode in self.hotkey_configs:
             if not self.triggered[mode] and self._is_hotkey_pressed(mode):
@@ -680,8 +686,10 @@ class MultiHotkeyHandler:
                     self.callbacks[mode]()
 
     def _on_release(self, key):
-        """Handle key release."""
-        self.current_keys.discard(key)
+        """Handle key release - track by VK code."""
+        vk = self._get_vk_code(key)
+        if vk is not None:
+            self.pressed_vk_codes.discard(vk)
 
         for mode in self.hotkey_configs:
             if not self._is_hotkey_pressed(mode):
