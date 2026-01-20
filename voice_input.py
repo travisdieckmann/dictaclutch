@@ -85,40 +85,58 @@ def play_beep(frequency: float = 440, duration: float = 0.1):
         print(f"Could not play beep: {e}")
 
 
+def generate_tone_sequence(frequencies: list[float], tone_duration: float = 0.06, gap_duration: float = 0.04) -> np.ndarray:
+    """Generate a sequence of tones with gaps between them."""
+    sample_rate = 44100
+    tones = []
+    gap_samples = int(sample_rate * gap_duration)
+    gap = np.zeros(gap_samples, dtype=np.float32)
+
+    for i, freq in enumerate(frequencies):
+        tone = generate_beep(freq, tone_duration, sample_rate)
+        tones.append(tone)
+        if i < len(frequencies) - 1:  # Add gap between tones, not after last
+            tones.append(gap)
+
+    return np.concatenate(tones)
+
+
+def play_tone_sequence(frequencies: list[float]):
+    """Play a sequence of tones."""
+    try:
+        sequence = generate_tone_sequence(frequencies)
+        sd.play(sequence, samplerate=44100)
+        sd.wait()  # Block until playback finishes
+    except Exception as e:
+        print(f"Could not play beep sequence: {e}")
+
+
 def beep_batch_start():
     """Beep indicating batch recording started (4-tone ascending, lower range)."""
     if CONFIG["beep_on_start"]:
         # E4 → G4 → A4 → C5 (warm, steady progression)
-        for freq in [330, 392, 440, 523]:
-            play_beep(freq, 0.06)
-            time.sleep(0.07)
+        play_tone_sequence([330, 392, 440, 523])
 
 
 def beep_batch_stop():
     """Beep indicating batch recording stopped (4-tone descending, lower range)."""
     if CONFIG["beep_on_stop"]:
         # C5 → A4 → G4 → E4
-        for freq in [523, 440, 392, 330]:
-            play_beep(freq, 0.06)
-            time.sleep(0.07)
+        play_tone_sequence([523, 440, 392, 330])
 
 
 def beep_streaming_start():
     """Beep indicating streaming started (4-tone ascending, higher range)."""
     if CONFIG["beep_on_start"]:
         # C5 → D5 → E5 → G5 (bright, dynamic progression)
-        for freq in [523, 587, 659, 784]:
-            play_beep(freq, 0.06)
-            time.sleep(0.07)
+        play_tone_sequence([523, 587, 659, 784])
 
 
 def beep_streaming_stop():
     """Beep indicating streaming stopped (4-tone descending, higher range)."""
     if CONFIG["beep_on_stop"]:
         # G5 → E5 → D5 → C5
-        for freq in [784, 659, 587, 523]:
-            play_beep(freq, 0.06)
-            time.sleep(0.07)
+        play_tone_sequence([784, 659, 587, 523])
 
 
 def beep_error():
